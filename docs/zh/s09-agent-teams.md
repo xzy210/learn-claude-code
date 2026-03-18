@@ -115,8 +115,8 @@ def _teammate_loop(self, name, role, prompt):
 
 ## 试一试
 
-```sh
-cd learn-claude-code
+```powershell
+Set-Location learn-claude-code
 python agents/s09_agent_teams.py
 ```
 

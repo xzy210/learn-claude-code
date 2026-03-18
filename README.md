@@ -231,11 +231,11 @@ Treat the team JSONL mailbox protocol in this repo as a teaching implementation,
 
 ## Quick Start
 
-```sh
+```powershell
 git clone https://github.com/shareAI-lab/learn-claude-code
-cd learn-claude-code
-pip install -r requirements.txt
-cp .env.example .env   # Edit .env with your ANTHROPIC_API_KEY
+Set-Location learn-claude-code
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env   # Edit .env with your ANTHROPIC_API_KEY
 
 python agents/s01_agent_loop.py       # Start here
 python agents/s12_worktree_task_isolation.py  # Full progression endpoint
@@ -246,8 +246,10 @@ python agents/s_full.py               # Capstone: all mechanisms combined
 
 Interactive visualizations, step-through diagrams, source viewer, and documentation.
 
-```sh
-cd web && npm install && npm run dev   # http://localhost:3000
+```powershell
+Set-Location web
+npm install
+npm run dev   # http://localhost:3000
 ```
 
 ## Learning Path

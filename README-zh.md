@@ -232,11 +232,11 @@ def agent_loop(messages):
 
 ## 快速开始
 
-```sh
+```powershell
 git clone https://github.com/shareAI-lab/learn-claude-code
-cd learn-claude-code
-pip install -r requirements.txt
-cp .env.example .env   # 编辑 .env 填入你的 ANTHROPIC_API_KEY
+Set-Location learn-claude-code
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env   # 编辑 .env 填入你的 ANTHROPIC_API_KEY
 
 python agents/s01_agent_loop.py       # 从这里开始
 python agents/s12_worktree_task_isolation.py  # 完整递进终点
@@ -247,8 +247,10 @@ python agents/s_full.py               # 总纲: 全部机制合一
 
 交互式可视化、分步动画、源码查看器, 以及每个课程的文档。
 
-```sh
-cd web && npm install && npm run dev   # http://localhost:3000
+```powershell
+Set-Location web
+npm install
+npm run dev   # http://localhost:3000
 ```
 
 ## 学习路径

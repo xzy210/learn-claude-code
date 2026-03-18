@@ -27,22 +27,25 @@ policy, hooks, and lifecycle controls on top.
 import os
 import subprocess
 
-from anthropic import Anthropic
 from dotenv import load_dotenv
 
+from llm_compat import create_client
+
 load_dotenv(override=True)
-
-if os.getenv("ANTHROPIC_BASE_URL"):
-    os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
-
-client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
+client = create_client()
 MODEL = os.environ["MODEL_ID"]
 
-SYSTEM = f"You are a coding agent at {os.getcwd()}. Use bash to solve tasks. Act, don't explain."
+SYSTEM = (
+    f"You are a coding agent on Windows at {os.getcwd()}. "
+    "Use PowerShell to solve tasks. Prefer PowerShell cmdlets and Windows paths. "
+    "For shell work, prefer commands like Get-ChildItem, Get-Content, Copy-Item, "
+    "Move-Item, Remove-Item, Select-String, and Set-Content instead of Unix commands. "
+    "Act, don't explain."
+)
 
 TOOLS = [{
-    "name": "bash",
-    "description": "Run a shell command.",
+    "name": "powershell",
+    "description": "Run a PowerShell command on Windows.",
     "input_schema": {
         "type": "object",
         "properties": {"command": {"type": "string"}},
@@ -51,13 +54,29 @@ TOOLS = [{
 }]
 
 
-def run_bash(command: str) -> str:
-    dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
+def run_powershell(command: str) -> str:
+    dangerous = [
+        "rm -rf /",
+        "sudo",
+        "shutdown",
+        "reboot",
+        "> /dev/",
+        "Remove-Item C:\\",
+        "Remove-Item C:/",
+        "Stop-Computer",
+        "Restart-Computer",
+        "format ",
+    ]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
     try:
-        r = subprocess.run(command, shell=True, cwd=os.getcwd(),
-                           capture_output=True, text=True, timeout=120)
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", command],
+            cwd=os.getcwd(),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
         out = (r.stdout + r.stderr).strip()
         return out[:50000] if out else "(no output)"
     except subprocess.TimeoutExpired:
@@ -81,7 +100,7 @@ def agent_loop(messages: list):
         for block in response.content:
             if block.type == "tool_use":
                 print(f"\033[33m$ {block.input['command']}\033[0m")
-                output = run_bash(block.input["command"])
+                output = run_powershell(block.input["command"])
                 print(output[:200])
                 results.append({"type": "tool_result", "tool_use_id": block.id,
                                 "content": output})

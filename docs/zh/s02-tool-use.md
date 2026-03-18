@@ -8,7 +8,7 @@
 
 ## 问题
 
-只有 `bash` 时, 所有操作都走 shell。`cat` 截断不可预测, `sed` 遇到特殊字符就崩, 每次 bash 调用都是不受约束的安全面。专用工具 (`read_file`, `write_file`) 可以在工具层面做路径沙箱。
+只有 `powershell` 时, 所有操作都走 shell。`Get-Content` 读取大文件时不够精确, 行内文本替换也比较笨重, 每次 PowerShell 调用依然都是不受约束的安全面。专用工具 (`read_file`, `write_file`) 可以在工具层面做路径沙箱。
 
 关键洞察: 加工具不需要改循环。
 
@@ -18,7 +18,7 @@
 +--------+      +-------+      +------------------+
 |  User  | ---> |  LLM  | ---> | Tool Dispatch    |
 | prompt |      |       |      | {                |
-+--------+      +---+---+      |   bash: run_bash |
++--------+      +---+---+      | powershell: run_ps|
                     ^           |   read: run_read |
                     |           |   write: run_wr  |
                     +-----------+   edit: run_edit |
@@ -52,7 +52,7 @@ def run_read(path: str, limit: int = None) -> str:
 
 ```python
 TOOL_HANDLERS = {
-    "bash":       lambda **kw: run_bash(kw["command"]),
+    "powershell": lambda **kw: run_powershell(kw["command"]),
     "read_file":  lambda **kw: run_read(kw["path"], kw.get("limit")),
     "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
     "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"],
@@ -81,15 +81,15 @@ for block in response.content:
 
 | 组件           | 之前 (s01)         | 之后 (s02)                     |
 |----------------|--------------------|--------------------------------|
-| Tools          | 1 (仅 bash)        | 4 (bash, read, write, edit)    |
-| Dispatch       | 硬编码 bash 调用   | `TOOL_HANDLERS` 字典           |
+| Tools          | 1 (仅 powershell)  | 4 (powershell, read, write, edit) |
+| Dispatch       | 硬编码 powershell 调用 | `TOOL_HANDLERS` 字典       |
 | 路径安全       | 无                 | `safe_path()` 沙箱             |
 | Agent loop     | 不变               | 不变                           |
 
 ## 试一试
 
-```sh
-cd learn-claude-code
+```powershell
+Set-Location learn-claude-code
 python agents/s02_tool_use.py
 ```
 

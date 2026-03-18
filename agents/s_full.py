@@ -20,7 +20,7 @@ NOT a teaching session -- this is the "put it all together" reference.
     |                                                                   |
     |  Tool dispatch (s02 pattern):                                     |
     |  +--------+----------+----------+---------+-----------+          |
-    |  | bash   | read     | write    | edit    | TodoWrite |          |
+    |  | ps     | read     | write    | edit    | TodoWrite |          |
     |  | task   | load_sk  | compress | bg_run  | bg_check  |          |
     |  | t_crt  | t_get    | t_upd    | t_list  | spawn_tm  |          |
     |  | list_tm| send_msg | rd_inbox | bcast   | shutdown  |          |
@@ -46,15 +46,14 @@ import uuid
 from pathlib import Path
 from queue import Queue
 
-from anthropic import Anthropic
 from dotenv import load_dotenv
 
+from llm_compat import create_client
+
 load_dotenv(override=True)
-if os.getenv("ANTHROPIC_BASE_URL"):
-    os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
 
 WORKDIR = Path.cwd()
-client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
+client = create_client()
 MODEL = os.environ["MODEL_ID"]
 
 TEAM_DIR = WORKDIR / ".team"
@@ -71,27 +70,66 @@ VALID_MSG_TYPES = {"message", "broadcast", "shutdown_request",
 
 
 # === SECTION: base_tools ===
+def _read_text_best_effort(path: Path) -> str:
+    data = path.read_bytes()
+    for encoding in ("utf-8", "utf-8-sig", "gb18030", "gbk", "cp1252"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def _powershell_command(command: str) -> str:
+    # Force UTF-8 for PowerShell and child Python processes to avoid GBK console issues.
+    prefix = (
+        "[Console]::InputEncoding = [System.Text.UTF8Encoding]::new(); "
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); "
+        "$OutputEncoding = [System.Text.UTF8Encoding]::new(); "
+        "$env:PYTHONIOENCODING = 'utf-8'; "
+    )
+    return prefix + command
+
+
 def safe_path(p: str) -> Path:
     path = (WORKDIR / p).resolve()
     if not path.is_relative_to(WORKDIR):
         raise ValueError(f"Path escapes workspace: {p}")
     return path
 
-def run_bash(command: str) -> str:
-    dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
+def run_powershell(command: str) -> str:
+    dangerous = [
+        "rm -rf /",
+        "sudo",
+        "shutdown",
+        "reboot",
+        "> /dev/",
+        "Remove-Item C:\\",
+        "Remove-Item C:/",
+        "Stop-Computer",
+        "Restart-Computer",
+        "format ",
+    ]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
     try:
-        r = subprocess.run(command, shell=True, cwd=WORKDIR,
-                           capture_output=True, text=True, timeout=120)
-        out = (r.stdout + r.stderr).strip()
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", _powershell_command(command)],
+            cwd=WORKDIR,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        out = ((r.stdout or "") + (r.stderr or "")).strip()
         return out[:50000] if out else "(no output)"
     except subprocess.TimeoutExpired:
         return "Error: Timeout (120s)"
 
 def run_read(path: str, limit: int = None) -> str:
     try:
-        lines = safe_path(path).read_text().splitlines()
+        lines = _read_text_best_effort(safe_path(path)).splitlines()
         if limit and limit < len(lines):
             lines = lines[:limit] + [f"... ({len(lines) - limit} more)"]
         return "\n".join(lines)[:50000]
@@ -102,7 +140,7 @@ def run_write(path: str, content: str) -> str:
     try:
         fp = safe_path(path)
         fp.parent.mkdir(parents=True, exist_ok=True)
-        fp.write_text(content)
+        fp.write_text(content, encoding="utf-8")
         return f"Wrote {len(content)} bytes to {path}"
     except Exception as e:
         return f"Error: {e}"
@@ -110,10 +148,10 @@ def run_write(path: str, content: str) -> str:
 def run_edit(path: str, old_text: str, new_text: str) -> str:
     try:
         fp = safe_path(path)
-        c = fp.read_text()
+        c = _read_text_best_effort(fp)
         if old_text not in c:
             return f"Error: Text not found in {path}"
-        fp.write_text(c.replace(old_text, new_text, 1))
+        fp.write_text(c.replace(old_text, new_text, 1), encoding="utf-8")
         return f"Edited {path}"
     except Exception as e:
         return f"Error: {e}"
@@ -158,8 +196,14 @@ class TodoManager:
 
 # === SECTION: subagent (s04) ===
 def run_subagent(prompt: str, agent_type: str = "Explore") -> str:
+    sub_system = (
+        f"You are a subagent on Windows at {WORKDIR}. "
+        "Use PowerShell commands and Windows paths. "
+        "Prefer Get-ChildItem, Get-Content, Copy-Item, Move-Item, Remove-Item, "
+        "Select-String, and Set-Content instead of Unix commands."
+    )
     sub_tools = [
-        {"name": "bash", "description": "Run command.",
+        {"name": "powershell", "description": "Run a PowerShell command on Windows.",
          "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
         {"name": "read_file", "description": "Read file.",
          "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
@@ -172,7 +216,7 @@ def run_subagent(prompt: str, agent_type: str = "Explore") -> str:
              "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}},
         ]
     sub_handlers = {
-        "bash": lambda **kw: run_bash(kw["command"]),
+        "powershell": lambda **kw: run_powershell(kw["command"]),
         "read_file": lambda **kw: run_read(kw["path"]),
         "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
         "edit_file": lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
@@ -180,7 +224,13 @@ def run_subagent(prompt: str, agent_type: str = "Explore") -> str:
     sub_msgs = [{"role": "user", "content": prompt}]
     resp = None
     for _ in range(30):
-        resp = client.messages.create(model=MODEL, messages=sub_msgs, tools=sub_tools, max_tokens=8000)
+        resp = client.messages.create(
+            model=MODEL,
+            system=sub_system,
+            messages=sub_msgs,
+            tools=sub_tools,
+            max_tokens=8000,
+        )
         sub_msgs.append({"role": "assistant", "content": resp.content})
         if resp.stop_reason != "tool_use":
             break
@@ -274,6 +324,7 @@ class TaskManager:
         return json.loads(p.read_text())
 
     def _save(self, task: dict):
+        TASKS_DIR.mkdir(parents=True, exist_ok=True)
         (TASKS_DIR / f"task_{task['id']}.json").write_text(json.dumps(task, indent=2))
 
     def create(self, subject: str, description: str = "") -> str:
@@ -332,6 +383,20 @@ class BackgroundManager:
         self.notifications = Queue()
 
     def run(self, command: str, timeout: int = 120) -> str:
+        dangerous = [
+            "rm -rf /",
+            "sudo",
+            "shutdown",
+            "reboot",
+            "> /dev/",
+            "Remove-Item C:\\",
+            "Remove-Item C:/",
+            "Stop-Computer",
+            "Restart-Computer",
+            "format ",
+        ]
+        if any(d in command for d in dangerous):
+            return "Error: Dangerous command blocked"
         tid = str(uuid.uuid4())[:8]
         self.tasks[tid] = {"status": "running", "command": command, "result": None}
         threading.Thread(target=self._exec, args=(tid, command, timeout), daemon=True).start()
@@ -339,9 +404,16 @@ class BackgroundManager:
 
     def _exec(self, tid: str, command: str, timeout: int):
         try:
-            r = subprocess.run(command, shell=True, cwd=WORKDIR,
-                               capture_output=True, text=True, timeout=timeout)
-            output = (r.stdout + r.stderr).strip()[:50000]
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", _powershell_command(command)],
+                cwd=WORKDIR,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+            output = (((r.stdout or "") + (r.stderr or "")).strip())[:50000]
             self.tasks[tid].update({"status": "completed", "result": output or "(no output)"})
         except Exception as e:
             self.tasks[tid].update({"status": "error", "result": str(e)})
@@ -441,11 +513,16 @@ class TeammateManager:
 
     def _loop(self, name: str, role: str, prompt: str):
         team_name = self.config["team_name"]
-        sys_prompt = (f"You are '{name}', role: {role}, team: {team_name}, at {WORKDIR}. "
-                      f"Use idle when done with current work. You may auto-claim tasks.")
+        sys_prompt = (
+            f"You are '{name}', role: {role}, team: {team_name}, on Windows at {WORKDIR}. "
+            "Use idle when done with current work. You may auto-claim tasks. "
+            "For shell tasks, use PowerShell commands and Windows paths. "
+            "Prefer Get-ChildItem, Get-Content, Copy-Item, Move-Item, Remove-Item, "
+            "Select-String, and Set-Content instead of Unix commands."
+        )
         messages = [{"role": "user", "content": prompt}]
         tools = [
-            {"name": "bash", "description": "Run command.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
+            {"name": "powershell", "description": "Run a PowerShell command on Windows.", "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
             {"name": "read_file", "description": "Read file.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
             {"name": "write_file", "description": "Write file.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
             {"name": "edit_file", "description": "Edit file.", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}},
@@ -484,7 +561,7 @@ class TeammateManager:
                         elif block.name == "send_message":
                             output = self.bus.send(name, block.input["to"], block.input["content"])
                         else:
-                            dispatch = {"bash": lambda **kw: run_bash(kw["command"]),
+                            dispatch = {"powershell": lambda **kw: run_powershell(kw["command"]),
                                         "read_file": lambda **kw: run_read(kw["path"]),
                                         "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
                                         "edit_file": lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"])}
@@ -551,9 +628,11 @@ BUS = MessageBus()
 TEAM = TeammateManager(BUS, TASK_MGR)
 
 # === SECTION: system_prompt ===
-SYSTEM = f"""You are a coding agent at {WORKDIR}. Use tools to solve tasks.
+SYSTEM = f"""You are a coding agent on Windows at {WORKDIR}. Use tools to solve tasks.
 Prefer task_create/task_update/task_list for multi-step work. Use TodoWrite for short checklists.
 Use task for subagent delegation. Use load_skill for specialized knowledge.
+For shell work, use PowerShell commands and Windows paths.
+Prefer Get-ChildItem, Get-Content, Copy-Item, Move-Item, Remove-Item, Select-String, and Set-Content instead of Unix commands.
 Skills: {SKILLS.descriptions()}"""
 
 
@@ -576,7 +655,7 @@ def handle_plan_review(request_id: str, approve: bool, feedback: str = "") -> st
 
 # === SECTION: tool_dispatch (s02) ===
 TOOL_HANDLERS = {
-    "bash":             lambda **kw: run_bash(kw["command"]),
+    "powershell":       lambda **kw: run_powershell(kw["command"]),
     "read_file":        lambda **kw: run_read(kw["path"], kw.get("limit")),
     "write_file":       lambda **kw: run_write(kw["path"], kw["content"]),
     "edit_file":        lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
@@ -602,7 +681,7 @@ TOOL_HANDLERS = {
 }
 
 TOOLS = [
-    {"name": "bash", "description": "Run a shell command.",
+    {"name": "powershell", "description": "Run a PowerShell command on Windows.",
      "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
     {"name": "read_file", "description": "Read file contents.",
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}},
@@ -618,7 +697,7 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
     {"name": "compress", "description": "Manually compress conversation context.",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "background_run", "description": "Run command in background thread.",
+    {"name": "background_run", "description": "Run a PowerShell command in a background thread.",
      "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "timeout": {"type": "integer"}}, "required": ["command"]}},
     {"name": "check_background", "description": "Check background task status.",
      "input_schema": {"type": "object", "properties": {"task_id": {"type": "string"}}}},
@@ -733,4 +812,9 @@ if __name__ == "__main__":
             continue
         history.append({"role": "user", "content": query})
         agent_loop(history)
+        response_content = history[-1]["content"]
+        if isinstance(response_content, list):
+            for block in response_content:
+                if hasattr(block, "text"):
+                    print(block.text)
         print()

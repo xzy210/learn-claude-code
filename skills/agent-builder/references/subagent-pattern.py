@@ -19,7 +19,7 @@ AGENT_TYPES = {
     # Explore: Read-only, for searching and analyzing
     "explore": {
         "description": "Read-only agent for exploring code, finding files, searching",
-        "tools": ["bash", "read_file"],  # No write access!
+        "tools": ["powershell", "read_file"],  # No write access!
         "prompt": "You are an exploration agent. Search and analyze, but NEVER modify files. Return a concise summary of what you found.",
     },
 
@@ -33,14 +33,14 @@ AGENT_TYPES = {
     # Plan: Read-only, for design work
     "plan": {
         "description": "Planning agent for designing implementation strategies",
-        "tools": ["bash", "read_file"],  # Read-only
+        "tools": ["powershell", "read_file"],  # Read-only
         "prompt": "You are a planning agent. Analyze the codebase and output a numbered implementation plan. Do NOT make any changes.",
     },
 
     # Add your own types here...
     # "test": {
     #     "description": "Testing agent for running and analyzing tests",
-    #     "tools": ["bash", "read_file"],
+    #     "tools": ["powershell", "read_file"],
     #     "prompt": "Run tests and report results. Don't modify code.",
     # },
 }

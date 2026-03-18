@@ -43,15 +43,14 @@ import time
 import uuid
 from pathlib import Path
 
-from anthropic import Anthropic
 from dotenv import load_dotenv
 
+from llm_compat import create_client
+
 load_dotenv(override=True)
-if os.getenv("ANTHROPIC_BASE_URL"):
-    os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
 
 WORKDIR = Path.cwd()
-client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
+client = create_client()
 MODEL = os.environ["MODEL_ID"]
 TEAM_DIR = WORKDIR / ".team"
 INBOX_DIR = TEAM_DIR / "inbox"
@@ -59,8 +58,20 @@ TASKS_DIR = WORKDIR / ".tasks"
 
 POLL_INTERVAL = 5
 IDLE_TIMEOUT = 60
+LEAD_POLL_INTERVAL = 1
 
-SYSTEM = f"You are a team lead at {WORKDIR}. Teammates are autonomous -- they find work themselves."
+SYSTEM = (
+    f"You are a team lead on Windows at {WORKDIR}. "
+    "Teammates are autonomous -- they find work themselves. "
+    "Use task_create and task_list for the .tasks task board. "
+    "Use task_complete when work is done and task_release to return work to the board. "
+    "The .tasks board is a directory of task_*.json files, not a text file. "
+    "Do not overwrite .tasks directly or create ad-hoc board files. "
+    "Plan approval requests from teammates are auto-reviewed in the background. "
+    "For shell tasks, use PowerShell commands and Windows paths. "
+    "Prefer Get-ChildItem, Get-Content, Copy-Item, Move-Item, Remove-Item, "
+    "Select-String, and Set-Content instead of Unix commands."
+)
 
 VALID_MSG_TYPES = {
     "message",
@@ -75,6 +86,10 @@ shutdown_requests = {}
 plan_requests = {}
 _tracker_lock = threading.Lock()
 _claim_lock = threading.Lock()
+_lead_events = []
+_lead_events_lock = threading.Lock()
+_lead_worker_started = False
+_lead_worker_lock = threading.Lock()
 
 
 # -- MessageBus: JSONL inbox per teammate --
@@ -123,11 +138,66 @@ class MessageBus:
 BUS = MessageBus(INBOX_DIR)
 
 
-# -- Task board scanning --
-def scan_unclaimed_tasks() -> list:
+# -- Task board helpers + scanning --
+def ensure_tasks_dir() -> Path:
+    if TASKS_DIR.exists() and not TASKS_DIR.is_dir():
+        raise RuntimeError(
+            f"Task board path must be a directory, but found a file at {TASKS_DIR}. "
+            "Delete or rename that file, then try again."
+        )
     TASKS_DIR.mkdir(exist_ok=True)
+    return TASKS_DIR
+
+
+def _next_task_id(tasks_dir: Path) -> int:
+    ids = []
+    for f in tasks_dir.glob("task_*.json"):
+        try:
+            ids.append(int(f.stem.split("_")[1]))
+        except Exception:
+            continue
+    return max(ids, default=0) + 1
+
+
+def create_task(subject: str, description: str = "") -> str:
+    with _claim_lock:
+        tasks_dir = ensure_tasks_dir()
+        task_id = _next_task_id(tasks_dir)
+        task = {
+            "id": task_id,
+            "subject": subject,
+            "description": description,
+            "status": "pending",
+            "owner": "",
+            "blockedBy": [],
+        }
+        (tasks_dir / f"task_{task_id}.json").write_text(json.dumps(task, indent=2))
+    return json.dumps(task, indent=2)
+
+
+def list_tasks() -> str:
+    tasks_dir = ensure_tasks_dir()
+    tasks = []
+    for f in sorted(tasks_dir.glob("task_*.json")):
+        tasks.append(json.loads(f.read_text()))
+    if not tasks:
+        return "No tasks."
+    lines = []
+    for task in tasks:
+        marker = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}.get(task["status"], "[?]")
+        owner = f" @{task['owner']}" if task.get("owner") else ""
+        blocked = f" blocked_by={task['blockedBy']}" if task.get("blockedBy") else ""
+        lines.append(f"{marker} #{task['id']}: {task['subject']}{owner}{blocked}")
+    return "\n".join(lines)
+
+
+def scan_unclaimed_tasks() -> list:
+    try:
+        tasks_dir = ensure_tasks_dir()
+    except RuntimeError:
+        return []
     unclaimed = []
-    for f in sorted(TASKS_DIR.glob("task_*.json")):
+    for f in sorted(tasks_dir.glob("task_*.json")):
         task = json.loads(f.read_text())
         if (task.get("status") == "pending"
                 and not task.get("owner")
@@ -138,14 +208,122 @@ def scan_unclaimed_tasks() -> list:
 
 def claim_task(task_id: int, owner: str) -> str:
     with _claim_lock:
-        path = TASKS_DIR / f"task_{task_id}.json"
+        tasks_dir = ensure_tasks_dir()
+        path = tasks_dir / f"task_{task_id}.json"
         if not path.exists():
             return f"Error: Task {task_id} not found"
         task = json.loads(path.read_text())
+        if task.get("blockedBy"):
+            return f"Error: Task {task_id} is blocked by {task['blockedBy']}"
+        current_owner = task.get("owner", "")
+        current_status = task.get("status", "pending")
+        if current_owner and current_owner != owner:
+            return f"Error: Task {task_id} is already claimed by {current_owner}"
+        if current_owner == owner and current_status == "in_progress":
+            return f"Task #{task_id} already claimed by {owner}"
+        if current_status != "pending":
+            return f"Error: Task {task_id} is not claimable (status={current_status})"
         task["owner"] = owner
         task["status"] = "in_progress"
         path.write_text(json.dumps(task, indent=2))
     return f"Claimed task #{task_id} for {owner}"
+
+
+def complete_task(task_id: int, actor: str, summary: str = "") -> str:
+    with _claim_lock:
+        tasks_dir = ensure_tasks_dir()
+        path = tasks_dir / f"task_{task_id}.json"
+        if not path.exists():
+            return f"Error: Task {task_id} not found"
+        task = json.loads(path.read_text())
+        current_owner = task.get("owner", "")
+        current_status = task.get("status", "pending")
+        if current_status == "completed":
+            return f"Task #{task_id} is already completed"
+        if current_status != "in_progress":
+            return f"Error: Task {task_id} cannot be completed from status={current_status}"
+        if current_owner and actor not in (current_owner, "lead"):
+            return f"Error: Task {task_id} is owned by {current_owner}, not {actor}"
+        task["status"] = "completed"
+        task["completedBy"] = actor
+        if summary:
+            task["completionSummary"] = summary
+        path.write_text(json.dumps(task, indent=2))
+    return f"Completed task #{task_id}"
+
+
+def release_task(task_id: int, actor: str, reason: str = "") -> str:
+    with _claim_lock:
+        tasks_dir = ensure_tasks_dir()
+        path = tasks_dir / f"task_{task_id}.json"
+        if not path.exists():
+            return f"Error: Task {task_id} not found"
+        task = json.loads(path.read_text())
+        current_owner = task.get("owner", "")
+        current_status = task.get("status", "pending")
+        if current_status == "completed":
+            return f"Error: Task {task_id} is already completed"
+        if not current_owner and current_status == "pending":
+            return f"Task #{task_id} is already unclaimed"
+        if current_owner and actor not in (current_owner, "lead"):
+            return f"Error: Task {task_id} is owned by {current_owner}, not {actor}"
+        task["owner"] = ""
+        task["status"] = "pending"
+        if reason:
+            task["releaseReason"] = reason
+        path.write_text(json.dumps(task, indent=2))
+    return f"Released task #{task_id}"
+
+
+def _queue_lead_event(message: dict):
+    with _lead_events_lock:
+        _lead_events.append(message)
+
+
+def drain_lead_events() -> list:
+    with _lead_events_lock:
+        items = list(_lead_events)
+        _lead_events.clear()
+    return items
+
+
+def _handle_lead_inbox_messages(messages: list[dict]):
+    for msg in messages:
+        if msg.get("type") == "plan_approval_response":
+            request_id = msg.get("request_id")
+            if request_id:
+                result = handle_plan_review(
+                    request_id,
+                    True,
+                    "Auto-approved by lead while running autonomous mode.",
+                )
+                _queue_lead_event({
+                    "type": "system",
+                    "from": "lead-daemon",
+                    "content": result,
+                    "request_id": request_id,
+                    "timestamp": time.time(),
+                })
+                continue
+        _queue_lead_event(msg)
+
+
+def _lead_inbox_loop():
+    while True:
+        inbox = BUS.read_inbox("lead")
+        if inbox:
+            _handle_lead_inbox_messages(inbox)
+        time.sleep(LEAD_POLL_INTERVAL)
+
+
+def ensure_lead_inbox_worker():
+    global _lead_worker_started
+    with _lead_worker_lock:
+        if _lead_worker_started:
+            return
+        thread = threading.Thread(target=_lead_inbox_loop, daemon=True)
+        thread.start()
+        _lead_worker_started = True
 
 
 # -- Identity re-injection after compression --
@@ -208,8 +386,14 @@ class TeammateManager:
     def _loop(self, name: str, role: str, prompt: str):
         team_name = self.config["team_name"]
         sys_prompt = (
-            f"You are '{name}', role: {role}, team: {team_name}, at {WORKDIR}. "
-            f"Use idle tool when you have no more work. You will auto-claim new tasks."
+            f"You are '{name}', role: {role}, team: {team_name}, on Windows at {WORKDIR}. "
+            "Use idle tool when you have no more work. You will auto-claim new tasks. "
+            "Use task_complete when you finish a claimed task. "
+            "Use task_release if you cannot continue and want to return a task to the board. "
+            "Plan approval requests are auto-reviewed by lead in the background. "
+            "For shell tasks, use PowerShell commands and Windows paths. "
+            "Prefer Get-ChildItem, Get-Content, Copy-Item, Move-Item, Remove-Item, "
+            "Select-String, and Set-Content instead of Unix commands."
         )
         messages = [{"role": "user", "content": prompt}]
         tools = self._teammate_tools()
@@ -274,7 +458,9 @@ class TeammateManager:
                 unclaimed = scan_unclaimed_tasks()
                 if unclaimed:
                     task = unclaimed[0]
-                    claim_task(task["id"], name)
+                    claim_result = claim_task(task["id"], name)
+                    if not claim_result.startswith("Claimed task #"):
+                        continue
                     task_prompt = (
                         f"<auto-claimed>Task #{task['id']}: {task['subject']}\n"
                         f"{task.get('description', '')}</auto-claimed>"
@@ -283,7 +469,7 @@ class TeammateManager:
                         messages.insert(0, make_identity_block(name, role, team_name))
                         messages.insert(1, {"role": "assistant", "content": f"I am {name}. Continuing."})
                     messages.append({"role": "user", "content": task_prompt})
-                    messages.append({"role": "assistant", "content": f"Claimed task #{task['id']}. Working on it."})
+                    messages.append({"role": "assistant", "content": claim_result + ". Working on it."})
                     resume = True
                     break
 
@@ -294,8 +480,8 @@ class TeammateManager:
 
     def _exec(self, sender: str, tool_name: str, args: dict) -> str:
         # these base tools are unchanged from s02
-        if tool_name == "bash":
-            return _run_bash(args["command"])
+        if tool_name == "powershell":
+            return _run_powershell(args["command"])
         if tool_name == "read_file":
             return _run_read(args["path"])
         if tool_name == "write_file":
@@ -328,12 +514,16 @@ class TeammateManager:
             return f"Plan submitted (request_id={req_id}). Waiting for approval."
         if tool_name == "claim_task":
             return claim_task(args["task_id"], sender)
+        if tool_name == "task_complete":
+            return complete_task(args["task_id"], sender, args.get("summary", ""))
+        if tool_name == "task_release":
+            return release_task(args["task_id"], sender, args.get("reason", ""))
         return f"Unknown tool: {tool_name}"
 
     def _teammate_tools(self) -> list:
         # these base tools are unchanged from s02
         return [
-            {"name": "bash", "description": "Run a shell command.",
+            {"name": "powershell", "description": "Run a PowerShell command on Windows.",
              "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
             {"name": "read_file", "description": "Read file contents.",
              "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
@@ -353,6 +543,10 @@ class TeammateManager:
              "input_schema": {"type": "object", "properties": {}}},
             {"name": "claim_task", "description": "Claim a task from the task board by ID.",
              "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}},
+            {"name": "task_complete", "description": "Mark a claimed task as completed.",
+             "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}, "summary": {"type": "string"}}, "required": ["task_id"]}},
+            {"name": "task_release", "description": "Release a claimed task back to the board.",
+             "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}, "reason": {"type": "string"}}, "required": ["task_id"]}},
         ]
 
     def list_all(self) -> str:
@@ -372,19 +566,36 @@ TEAM = TeammateManager(TEAM_DIR)
 
 # -- Base tool implementations (these base tools are unchanged from s02) --
 def _safe_path(p: str) -> Path:
+    if p in (".tasks", ".tasks\\", ".tasks/"):
+        raise ValueError(
+            ".tasks is a directory-backed task board. Use task_create/task_list "
+            "instead of reading or writing .tasks directly."
+        )
     path = (WORKDIR / p).resolve()
     if not path.is_relative_to(WORKDIR):
         raise ValueError(f"Path escapes workspace: {p}")
     return path
 
 
-def _run_bash(command: str) -> str:
-    dangerous = ["rm -rf /", "sudo", "shutdown", "reboot"]
+def _run_powershell(command: str) -> str:
+    dangerous = [
+        "rm -rf /",
+        "sudo",
+        "shutdown",
+        "reboot",
+        "> /dev/",
+        "Remove-Item C:\\",
+        "Remove-Item C:/",
+        "Stop-Computer",
+        "Restart-Computer",
+        "format ",
+    ]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
     try:
         r = subprocess.run(
-            command, shell=True, cwd=WORKDIR,
+            ["powershell", "-NoProfile", "-Command", command],
+            cwd=WORKDIR,
             capture_output=True, text=True, timeout=120,
         )
         out = (r.stdout + r.stderr).strip()
@@ -456,16 +667,20 @@ def _check_shutdown_status(request_id: str) -> str:
         return json.dumps(shutdown_requests.get(request_id, {"error": "not found"}))
 
 
-# -- Lead tool dispatch (14 tools) --
+# -- Lead tool dispatch (16 tools) --
 TOOL_HANDLERS = {
-    "bash":              lambda **kw: _run_bash(kw["command"]),
+    "powershell":        lambda **kw: _run_powershell(kw["command"]),
     "read_file":         lambda **kw: _run_read(kw["path"], kw.get("limit")),
     "write_file":        lambda **kw: _run_write(kw["path"], kw["content"]),
     "edit_file":         lambda **kw: _run_edit(kw["path"], kw["old_text"], kw["new_text"]),
+    "task_create":       lambda **kw: create_task(kw["subject"], kw.get("description", "")),
+    "task_list":         lambda **kw: list_tasks(),
+    "task_complete":     lambda **kw: complete_task(kw["task_id"], "lead", kw.get("summary", "")),
+    "task_release":      lambda **kw: release_task(kw["task_id"], "lead", kw.get("reason", "")),
     "spawn_teammate":    lambda **kw: TEAM.spawn(kw["name"], kw["role"], kw["prompt"]),
     "list_teammates":    lambda **kw: TEAM.list_all(),
     "send_message":      lambda **kw: BUS.send("lead", kw["to"], kw["content"], kw.get("msg_type", "message")),
-    "read_inbox":        lambda **kw: json.dumps(BUS.read_inbox("lead"), indent=2),
+    "read_inbox":        lambda **kw: json.dumps(drain_lead_events(), indent=2),
     "broadcast":         lambda **kw: BUS.broadcast("lead", kw["content"], TEAM.member_names()),
     "shutdown_request":  lambda **kw: handle_shutdown_request(kw["teammate"]),
     "shutdown_response": lambda **kw: _check_shutdown_status(kw.get("request_id", "")),
@@ -476,7 +691,7 @@ TOOL_HANDLERS = {
 
 # these base tools are unchanged from s02
 TOOLS = [
-    {"name": "bash", "description": "Run a shell command.",
+    {"name": "powershell", "description": "Run a PowerShell command on Windows.",
      "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
     {"name": "read_file", "description": "Read file contents.",
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}},
@@ -484,6 +699,14 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
     {"name": "edit_file", "description": "Replace exact text in file.",
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}},
+    {"name": "task_create", "description": "Create a task in the .tasks JSON task board.",
+     "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "description": {"type": "string"}}, "required": ["subject"]}},
+    {"name": "task_list", "description": "List tasks from the .tasks JSON task board.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "task_complete", "description": "Mark a task as completed.",
+     "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}, "summary": {"type": "string"}}, "required": ["task_id"]}},
+    {"name": "task_release", "description": "Release a task back to pending.",
+     "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}, "reason": {"type": "string"}}, "required": ["task_id"]}},
     {"name": "spawn_teammate", "description": "Spawn an autonomous teammate.",
      "input_schema": {"type": "object", "properties": {"name": {"type": "string"}, "role": {"type": "string"}, "prompt": {"type": "string"}}, "required": ["name", "role", "prompt"]}},
     {"name": "list_teammates", "description": "List all teammates.",
@@ -508,8 +731,9 @@ TOOLS = [
 
 
 def agent_loop(messages: list):
+    ensure_lead_inbox_worker()
     while True:
-        inbox = BUS.read_inbox("lead")
+        inbox = drain_lead_events()
         if inbox:
             messages.append({
                 "role": "user",
@@ -547,6 +771,7 @@ def agent_loop(messages: list):
 
 
 if __name__ == "__main__":
+    ensure_lead_inbox_worker()
     history = []
     while True:
         try:
@@ -559,15 +784,10 @@ if __name__ == "__main__":
             print(TEAM.list_all())
             continue
         if query.strip() == "/inbox":
-            print(json.dumps(BUS.read_inbox("lead"), indent=2))
+            print(json.dumps(drain_lead_events(), indent=2))
             continue
         if query.strip() == "/tasks":
-            TASKS_DIR.mkdir(exist_ok=True)
-            for f in sorted(TASKS_DIR.glob("task_*.json")):
-                t = json.loads(f.read_text())
-                marker = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}.get(t["status"], "[?]")
-                owner = f" @{t['owner']}" if t.get("owner") else ""
-                print(f"  {marker} #{t['id']}: {t['subject']}{owner}")
+            print(list_tasks())
             continue
         history.append({"role": "user", "content": query})
         agent_loop(history)

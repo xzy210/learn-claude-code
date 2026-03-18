@@ -9,39 +9,44 @@ You now have expertise in PDF manipulation. Follow these workflows:
 
 ## Reading PDFs
 
-**Option 1: Quick text extraction (preferred)**
-```bash
+On Windows, avoid printing large PDF text directly to the console because PowerShell/GBK encoding can corrupt output. Prefer writing UTF-8 text to a file, then read that file.
+
+**Option 1: Quick text extraction to UTF-8 text file (preferred)**
+```powershell
 # Using pdftotext (poppler-utils)
-pdftotext input.pdf -  # Output to stdout
 pdftotext input.pdf output.txt  # Output to file
 
+# If the console encoding is problematic, force UTF-8 first:
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+$OutputEncoding = [System.Text.UTF8Encoding]::new()
+$env:PYTHONIOENCODING = 'utf-8'
+
 # If pdftotext not available, try:
-python3 -c "
-import fitz  # PyMuPDF
-doc = fitz.open('input.pdf')
-for page in doc:
-    print(page.get_text())
-"
+python -c "import fitz, pathlib; doc = fitz.open('input.pdf'); text = '\n\n'.join(page.get_text() for page in doc); pathlib.Path('output.txt').write_text(text, encoding='utf-8')"
 ```
 
 **Option 2: Page-by-page with metadata**
 ```python
 import fitz  # pip install pymupdf
+from pathlib import Path
 
 doc = fitz.open("input.pdf")
 print(f"Pages: {len(doc)}")
 print(f"Metadata: {doc.metadata}")
 
+chunks = []
 for i, page in enumerate(doc):
     text = page.get_text()
-    print(f"--- Page {i+1} ---")
-    print(text)
+    chunks.append(f"--- Page {i+1} ---\n{text}")
+
+Path("output.txt").write_text("\n\n".join(chunks), encoding="utf-8")
+print("Saved extracted text to output.txt")
 ```
 
 ## Creating PDFs
 
 **Option 1: From Markdown (recommended)**
-```bash
+```powershell
 # Using pandoc
 pandoc input.md -o output.pdf
 
@@ -60,12 +65,12 @@ c.save()
 ```
 
 **Option 3: From HTML**
-```bash
+```powershell
 # Using wkhtmltopdf
 wkhtmltopdf input.html output.pdf
 
 # Or with Python
-python3 -c "
+python -c "
 import pdfkit
 pdfkit.from_file('input.html', 'output.pdf')
 "
@@ -102,11 +107,13 @@ for i in range(len(doc)):
 | Read/Write/Merge | PyMuPDF | `pip install pymupdf` |
 | Create from scratch | ReportLab | `pip install reportlab` |
 | HTML to PDF | pdfkit | `pip install pdfkit` + wkhtmltopdf |
-| Text extraction | pdftotext | `brew install poppler` / `apt install poppler-utils` |
+| Text extraction | pdftotext | `winget install oschwartz10612.poppler` / `brew install poppler` / `apt install poppler-utils` |
 
 ## Best Practices
 
 1. **Always check if tools are installed** before using them
-2. **Handle encoding issues** - PDFs may contain various character encodings
-3. **Large PDFs**: Process page by page to avoid memory issues
-4. **OCR for scanned PDFs**: Use `pytesseract` if text extraction returns empty
+2. **On Windows, prefer writing extracted text to UTF-8 files** instead of printing full PDF text to the console
+3. **Set UTF-8 console output when needed** with `[Console]::OutputEncoding`, `$OutputEncoding`, and `PYTHONIOENCODING=utf-8`
+4. **Handle encoding issues** - PDFs may contain various character encodings
+5. **Large PDFs**: Process page by page to avoid memory issues
+6. **OCR for scanned PDFs**: Use `pytesseract` if text extraction returns empty

@@ -22,18 +22,19 @@ MODEL = os.getenv("MODEL_NAME", "claude-sonnet-4-20250514")
 WORKDIR = Path.cwd()
 
 # System prompt - keep it simple
-SYSTEM = f"""You are a coding agent at {WORKDIR}.
+SYSTEM = f"""You are a coding agent on Windows at {WORKDIR}.
 
 Rules:
 - Use tools to complete tasks
+- Use PowerShell commands and Windows paths for shell work
 - Prefer action over explanation
 - Summarize what you did when done"""
 
 # Minimal tool set - add more as needed
 TOOLS = [
     {
-        "name": "bash",
-        "description": "Run shell command",
+        "name": "powershell",
+        "description": "Run PowerShell command on Windows",
         "input_schema": {
             "type": "object",
             "properties": {"command": {"type": "string"}},
@@ -66,10 +67,11 @@ TOOLS = [
 
 def execute_tool(name: str, args: dict) -> str:
     """Execute a tool and return result."""
-    if name == "bash":
+    if name == "powershell":
         try:
             r = subprocess.run(
-                args["command"], shell=True, cwd=WORKDIR,
+                ["powershell", "-NoProfile", "-Command", args["command"]],
+                cwd=WORKDIR,
                 capture_output=True, text=True, timeout=60
             )
             return (r.stdout + r.stderr).strip() or "(empty)"

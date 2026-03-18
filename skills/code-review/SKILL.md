@@ -19,12 +19,12 @@ Check for:
 - [ ] **Cryptography**: Weak algorithms, improper key management
 - [ ] **Dependencies**: Known vulnerabilities (check with `npm audit`, `pip-audit`)
 
-```bash
+```powershell
 # Quick security scans
 npm audit                    # Node.js
 pip-audit                    # Python
 cargo audit                  # Rust
-grep -r "password\|secret\|api_key" --include="*.py" --include="*.js"
+Get-ChildItem -Recurse -Include *.py,*.js | Select-String -Pattern "password|secret|api_key"
 ```
 
 ### 2. Correctness
@@ -97,9 +97,9 @@ cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")
 cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
 
 # Bad: Command injection
-os.system(f"ls {user_input}")
+os.system(f"dir {user_input}")
 # Good:
-subprocess.run(["ls", user_input], check=True)
+subprocess.run(["powershell", "-NoProfile", "-Command", "Get-ChildItem", user_input], check=True)
 
 # Bad: Mutable default argument
 def append(item, lst=[]):  # Bug: shared mutable default
@@ -129,17 +129,18 @@ await save(processed);
 
 ## Review Commands
 
-```bash
+```powershell
 # Show recent changes
 git diff HEAD~5 --stat
 git log --oneline -10
 
 # Find potential issues
-grep -rn "TODO\|FIXME\|HACK\|XXX" .
-grep -rn "password\|secret\|token" . --include="*.py"
+Get-ChildItem -Recurse -File | Select-String -Pattern "TODO|FIXME|HACK|XXX"
+Get-ChildItem -Recurse -Include *.py | Select-String -Pattern "password|secret|token"
 
 # Check complexity (Python)
-pip install radon && radon cc . -a
+pip install radon
+radon cc . -a
 
 # Check dependencies
 npm outdated  # Node

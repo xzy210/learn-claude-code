@@ -8,7 +8,7 @@
 
 ## Problem
 
-With only `bash`, the agent shells out for everything. `cat` truncates unpredictably, `sed` fails on special characters, and every bash call is an unconstrained security surface. Dedicated tools like `read_file` and `write_file` let you enforce path sandboxing at the tool level.
+With only `powershell`, the agent shells out for everything. `Get-Content` is imprecise for large file reads, inline text replacement gets awkward quickly, and every PowerShell call is still an unconstrained security surface. Dedicated tools like `read_file` and `write_file` let you enforce path sandboxing at the tool level.
 
 The key insight: adding tools does not require changing the loop.
 
@@ -18,7 +18,7 @@ The key insight: adding tools does not require changing the loop.
 +--------+      +-------+      +------------------+
 |  User  | ---> |  LLM  | ---> | Tool Dispatch    |
 | prompt |      |       |      | {                |
-+--------+      +---+---+      |   bash: run_bash |
++--------+      +---+---+      | powershell: run_ps|
                     ^           |   read: run_read |
                     |           |   write: run_wr  |
                     +-----------+   edit: run_edit |
@@ -52,7 +52,7 @@ def run_read(path: str, limit: int = None) -> str:
 
 ```python
 TOOL_HANDLERS = {
-    "bash":       lambda **kw: run_bash(kw["command"]),
+    "powershell": lambda **kw: run_powershell(kw["command"]),
     "read_file":  lambda **kw: run_read(kw["path"], kw.get("limit")),
     "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
     "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"],
@@ -81,15 +81,15 @@ Add a tool = add a handler + add a schema entry. The loop never changes.
 
 | Component      | Before (s01)       | After (s02)                |
 |----------------|--------------------|----------------------------|
-| Tools          | 1 (bash only)      | 4 (bash, read, write, edit)|
-| Dispatch       | Hardcoded bash call | `TOOL_HANDLERS` dict       |
+| Tools          | 1 (powershell only) | 4 (powershell, read, write, edit) |
+| Dispatch       | Hardcoded powershell call | `TOOL_HANDLERS` dict |
 | Path safety    | None               | `safe_path()` sandbox      |
 | Agent loop     | Unchanged          | Unchanged                  |
 
 ## Try It
 
-```sh
-cd learn-claude-code
+```powershell
+Set-Location learn-claude-code
 python agents/s02_tool_use.py
 ```
 

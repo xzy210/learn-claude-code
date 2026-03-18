@@ -7,7 +7,7 @@ Usage:
 
 Examples:
     python init_agent.py my-agent                 # Level 1 (4 tools)
-    python init_agent.py my-agent --level 0      # Minimal (bash only)
+    python init_agent.py my-agent --level 0      # Minimal (powershell only)
     python init_agent.py my-agent --level 2      # With TodoWrite
     python init_agent.py my-agent --path ./bots  # Custom output directory
 """
@@ -20,9 +20,9 @@ from pathlib import Path
 TEMPLATES = {
     0: '''#!/usr/bin/env python3
 """
-Level 0 Agent - Bash is All You Need (~50 lines)
+Level 0 Agent - PowerShell is All You Need (~50 lines)
 
-Core insight: One tool (bash) can do everything.
+Core insight: One tool (powershell) can do everything.
 Subagents via self-recursion: python {name}.py "subtask"
 """
 
@@ -39,15 +39,15 @@ client = Anthropic(
 )
 MODEL = os.getenv("MODEL_NAME", "claude-sonnet-4-20250514")
 
-SYSTEM = """You are a coding agent. Use bash for everything:
-- Read: cat, grep, find, ls
-- Write: echo 'content' > file
+SYSTEM = """You are a coding agent on Windows. Use PowerShell for everything:
+- Read: Get-Content, Select-String, Get-ChildItem
+- Write: Set-Content
 - Subagent: python {name}.py "subtask"
 """
 
 TOOL = [{{
-    "name": "bash",
-    "description": "Execute shell command",
+    "name": "powershell",
+    "description": "Execute PowerShell command",
     "input_schema": {{"type": "object", "properties": {{"command": {{"type": "string"}}}}, "required": ["command"]}}
 }}]
 
@@ -63,7 +63,7 @@ def run(prompt, history=[]):
             if b.type == "tool_use":
                 print(f"> {{b.input['command']}}")
                 try:
-                    out = subprocess.run(b.input["command"], shell=True, capture_output=True, text=True, timeout=60)
+                    out = subprocess.run(["powershell", "-NoProfile", "-Command", b.input["command"]], capture_output=True, text=True, timeout=60)
                     output = (out.stdout + out.stderr).strip() or "(empty)"
                 except Exception as e:
                     output = f"Error: {{e}}"
@@ -104,12 +104,12 @@ SYSTEM = f"""You are a coding agent at {{WORKDIR}}.
 
 Rules:
 - Prefer tools over prose. Act, don't just explain.
-- Never invent file paths. Use ls/find first if unsure.
+- Never invent file paths. Use Get-ChildItem first if unsure.
 - Make minimal changes. Don't over-engineer.
 - After finishing, summarize what changed."""
 
 TOOLS = [
-    {{"name": "bash", "description": "Run shell command",
+    {{"name": "powershell", "description": "Run PowerShell command",
      "input_schema": {{"type": "object", "properties": {{"command": {{"type": "string"}}}}, "required": ["command"]}}}},
     {{"name": "read_file", "description": "Read file contents",
      "input_schema": {{"type": "object", "properties": {{"path": {{"type": "string"}}}}, "required": ["path"]}}}},
@@ -128,12 +128,12 @@ def safe_path(p: str) -> Path:
 
 def execute(name: str, args: dict) -> str:
     """Execute a tool and return result."""
-    if name == "bash":
-        dangerous = ["rm -rf /", "sudo", "shutdown", "> /dev/"]
+    if name == "powershell":
+        dangerous = ["rm -rf /", "sudo", "shutdown", "> /dev/", "Remove-Item C:\\", "Remove-Item C:/", "Stop-Computer", "Restart-Computer", "format "]
         if any(d in args["command"] for d in dangerous):
             return "Error: Dangerous command blocked"
         try:
-            r = subprocess.run(args["command"], shell=True, cwd=WORKDIR, capture_output=True, text=True, timeout=60)
+            r = subprocess.run(["powershell", "-NoProfile", "-Command", args["command"]], cwd=WORKDIR, capture_output=True, text=True, timeout=60)
             return (r.stdout + r.stderr).strip()[:50000] or "(empty)"
         except subprocess.TimeoutExpired:
             return "Error: Timeout (60s)"
@@ -245,8 +245,8 @@ def create_agent(name: str, level: int, output_dir: Path):
 
     print(f"\nAgent '{name}' created at {agent_dir}")
     print(f"\nNext steps:")
-    print(f"  1. cd {agent_dir}")
-    print(f"  2. cp .env.example .env")
+    print(f"  1. Set-Location {agent_dir}")
+    print(f"  2. Copy-Item .env.example .env")
     print(f"  3. Edit .env with your API key")
     print(f"  4. pip install anthropic python-dotenv")
     print(f"  5. python {name}.py")
@@ -258,8 +258,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Levels:
-  0  Minimal (~50 lines) - Single bash tool, self-recursion for subagents
-  1  Basic (~200 lines)  - 4 core tools: bash, read, write, edit
+  0  Minimal (~50 lines) - Single powershell tool, self-recursion for subagents
+  1  Basic (~200 lines)  - 4 core tools: powershell, read, write, edit
   2  Todo (~300 lines)   - + TodoWrite for structured planning
   3  Subagent (~450)     - + Task tool for context isolation
   4  Skills (~550)       - + Skill tool for domain expertise

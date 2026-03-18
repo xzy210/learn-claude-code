@@ -18,10 +18,12 @@ MCP servers expose:
 
 ### 1. Project Setup
 
-```bash
+```powershell
 # Create project
-mkdir my-mcp-server && cd my-mcp-server
-python3 -m venv venv && source venv/bin/activate
+New-Item -ItemType Directory -Path my-mcp-server
+Set-Location my-mcp-server
+python -m venv venv
+.\venv\Scripts\Activate.ps1
 
 # Install MCP SDK
 pip install mcp
@@ -72,12 +74,12 @@ if __name__ == "__main__":
 
 ### 3. Register with Claude
 
-Add to `~/.claude/mcp.json`:
+Add to `$env:USERPROFILE\.claude\mcp.json`:
 ```json
 {
   "mcpServers": {
     "my-server": {
-      "command": "python3",
+      "command": "python",
       "args": ["/path/to/my_server.py"]
     }
   }
@@ -88,8 +90,9 @@ Add to `~/.claude/mcp.json`:
 
 ### 1. Setup
 
-```bash
-mkdir my-mcp-server && cd my-mcp-server
+```powershell
+New-Item -ItemType Directory -Path my-mcp-server
+Set-Location my-mcp-server
 npm init -y
 npm install @modelcontextprotocol/sdk
 ```
@@ -195,12 +198,12 @@ async def read_file(path: str) -> str:
 
 ## Testing
 
-```bash
+```powershell
 # Test with MCP Inspector
-npx @anthropics/mcp-inspector python3 my_server.py
+npx @anthropics/mcp-inspector python my_server.py
 
 # Or send test messages directly
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | python3 my_server.py
+'{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | python my_server.py
 ```
 
 ## Best Practices

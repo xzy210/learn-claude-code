@@ -232,11 +232,11 @@ def agent_loop(messages):
 
 ## クイックスタート
 
-```sh
+```powershell
 git clone https://github.com/shareAI-lab/learn-claude-code
-cd learn-claude-code
-pip install -r requirements.txt
-cp .env.example .env   # .env を編集して ANTHROPIC_API_KEY を入力
+Set-Location learn-claude-code
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env   # .env を編集して ANTHROPIC_API_KEY を入力
 
 python agents/s01_agent_loop.py       # ここから開始
 python agents/s12_worktree_task_isolation.py  # 全セッションの到達点
@@ -247,8 +247,10 @@ python agents/s_full.py               # 総括: 全メカニズム統合
 
 インタラクティブな可視化、ステップスルーアニメーション、ソースビューア、各セッションのドキュメント。
 
-```sh
-cd web && npm install && npm run dev   # http://localhost:3000
+```powershell
+Set-Location web
+npm install
+npm run dev   # http://localhost:3000
 ```
 
 ## 学習パス

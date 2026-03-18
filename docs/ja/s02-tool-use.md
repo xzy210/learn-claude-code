@@ -8,7 +8,7 @@
 
 ## 問題
 
-`bash`だけでは、エージェントは何でもシェル経由で行う。`cat`は予測不能に切り詰め、`sed`は特殊文字で壊れ、すべてのbash呼び出しが制約のないセキュリティ面になる。`read_file`や`write_file`のような専用ツールなら、ツールレベルでパスのサンドボックス化を強制できる。
+`powershell`だけでは、エージェントは何でもシェル経由で行う。`Get-Content`は大きなファイル読み取りでは不正確になりやすく、行内テキスト置換もすぐ複雑になる。PowerShell 呼び出しは依然として広いセキュリティ面を持つ。`read_file`や`write_file`のような専用ツールなら、ツールレベルでパスのサンドボックス化を強制できる。
 
 重要な点: ツールを追加してもループの変更は不要。
 
@@ -18,7 +18,7 @@
 +--------+      +-------+      +------------------+
 |  User  | ---> |  LLM  | ---> | Tool Dispatch    |
 | prompt |      |       |      | {                |
-+--------+      +---+---+      |   bash: run_bash |
++--------+      +---+---+      | powershell: run_ps|
                     ^           |   read: run_read |
                     |           |   write: run_wr  |
                     +-----------+   edit: run_edit |
@@ -52,7 +52,7 @@ def run_read(path: str, limit: int = None) -> str:
 
 ```python
 TOOL_HANDLERS = {
-    "bash":       lambda **kw: run_bash(kw["command"]),
+    "powershell": lambda **kw: run_powershell(kw["command"]),
     "read_file":  lambda **kw: run_read(kw["path"], kw.get("limit")),
     "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
     "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"],
@@ -81,15 +81,15 @@ for block in response.content:
 
 | Component      | Before (s01)       | After (s02)                |
 |----------------|--------------------|----------------------------|
-| Tools          | 1 (bash only)      | 4 (bash, read, write, edit)|
-| Dispatch       | Hardcoded bash call | `TOOL_HANDLERS` dict       |
+| Tools          | 1 (powershell only) | 4 (powershell, read, write, edit) |
+| Dispatch       | Hardcoded powershell call | `TOOL_HANDLERS` dict |
 | Path safety    | None               | `safe_path()` sandbox      |
 | Agent loop     | Unchanged          | Unchanged                  |
 
 ## 試してみる
 
-```sh
-cd learn-claude-code
+```powershell
+Set-Location learn-claude-code
 python agents/s02_tool_use.py
 ```
 

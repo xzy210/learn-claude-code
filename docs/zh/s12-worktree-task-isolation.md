@@ -5,6 +5,8 @@
 > *"各干各的目录, 互不干扰"* -- 任务管目标, worktree 管目录, 按 ID 绑定。
 >
 > **Harness 层**: 目录隔离 -- 永不碰撞的并行执行通道。
+>
+> Windows 版默认使用 PowerShell 执行命令。
 
 ## 问题
 
@@ -62,11 +64,16 @@ def bind_worktree(self, task_id, worktree):
     self._save(task)
 ```
 
-3. **在 worktree 中执行命令。** `cwd` 指向隔离目录。
+3. **在 worktree 中执行命令。** `cwd` 指向隔离目录, 命令通过 PowerShell 执行。
 
 ```python
-subprocess.run(command, shell=True, cwd=worktree_path,
-               capture_output=True, text=True, timeout=300)
+subprocess.run(
+    ["powershell", "-NoProfile", "-Command", command],
+    cwd=worktree_path,
+    capture_output=True,
+    text=True,
+    timeout=300,
+)
 ```
 
 4. **收尾。** 两种选择:
@@ -109,8 +116,8 @@ def remove(self, name, force=False, complete_task=False):
 
 ## 试一试
 
-```sh
-cd learn-claude-code
+```powershell
+Set-Location learn-claude-code
 python agents/s12_worktree_task_isolation.py
 ```
 
@@ -118,6 +125,6 @@ python agents/s12_worktree_task_isolation.py
 
 1. `Create tasks for backend auth and frontend login page, then list tasks.`
 2. `Create worktree "auth-refactor" for task 1, then bind task 2 to a new worktree "ui-login".`
-3. `Run "git status --short" in worktree "auth-refactor".`
+3. `Run "git status --short" in worktree "auth-refactor" using PowerShell.`
 4. `Keep worktree "ui-login", then list worktrees and inspect events.`
 5. `Remove worktree "auth-refactor" with complete_task=true, then list tasks/worktrees/events.`

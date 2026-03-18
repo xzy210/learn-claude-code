@@ -37,16 +37,14 @@ import subprocess
 import time
 from pathlib import Path
 
-from anthropic import Anthropic
 from dotenv import load_dotenv
+
+from llm_compat import create_client, is_rate_limit_error
 
 load_dotenv(override=True)
 
-if os.getenv("ANTHROPIC_BASE_URL"):
-    os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
-
 WORKDIR = Path.cwd()
-client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
+client = create_client()
 MODEL = os.environ["MODEL_ID"]
 
 
@@ -71,11 +69,19 @@ def detect_repo_root(cwd: Path) -> Path | None:
 REPO_ROOT = detect_repo_root(WORKDIR) or WORKDIR
 
 SYSTEM = (
-    f"You are a coding agent at {WORKDIR}. "
-    "Use task + worktree tools for multi-task work. "
-    "For parallel or risky changes: create tasks, allocate worktree lanes, "
-    "run commands in those lanes, then choose keep/remove for closeout. "
-    "Use worktree_events when you need lifecycle visibility."
+    f"You are a coding agent on Windows at {WORKDIR}. "
+    "Use task and worktree tools as the default control plane for multi-step, "
+    "parallel, or risky work. "
+    "Before acting, inspect the current state with task_list, task_get, "
+    "worktree_list, or worktree_events when needed. "
+    "If a task is bound to a worktree, do the implementation work inside that "
+    "worktree lane instead of editing the main workspace directly. "
+    "Prefer worktree_run for task-scoped commands. "
+    "When finishing, close the loop explicitly: either remove the worktree and "
+    "complete the task, or keep the worktree with a clear reason. "
+    "Use PowerShell commands and Windows paths only. Prefer Get-ChildItem, "
+    "Get-Content, Set-Content, Copy-Item, Move-Item, Remove-Item, and "
+    "Select-String instead of Unix shell commands."
 )
 
 
@@ -144,6 +150,7 @@ class TaskManager:
         return json.loads(path.read_text())
 
     def _save(self, task: dict):
+        self.dir.mkdir(parents=True, exist_ok=True)
         self._path(task["id"]).write_text(json.dumps(task, indent=2))
 
     def create(self, subject: str, description: str = "") -> str:
@@ -366,7 +373,18 @@ class WorktreeManager:
         return text or "Clean worktree"
 
     def run(self, name: str, command: str) -> str:
-        dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
+        dangerous = [
+            "rm -rf /",
+            "sudo",
+            "shutdown",
+            "reboot",
+            "> /dev/",
+            "Remove-Item C:\\",
+            "Remove-Item C:/",
+            "Stop-Computer",
+            "Restart-Computer",
+            "format ",
+        ]
         if any(d in command for d in dangerous):
             return "Error: Dangerous command blocked"
 
@@ -379,8 +397,7 @@ class WorktreeManager:
 
         try:
             r = subprocess.run(
-                command,
-                shell=True,
+                ["powershell", "-NoProfile", "-Command", command],
                 cwd=path,
                 capture_output=True,
                 text=True,
@@ -482,14 +499,24 @@ def safe_path(p: str) -> Path:
     return path
 
 
-def run_bash(command: str) -> str:
-    dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
+def run_powershell(command: str) -> str:
+    dangerous = [
+        "rm -rf /",
+        "sudo",
+        "shutdown",
+        "reboot",
+        "> /dev/",
+        "Remove-Item C:\\",
+        "Remove-Item C:/",
+        "Stop-Computer",
+        "Restart-Computer",
+        "format ",
+    ]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
     try:
         r = subprocess.run(
-            command,
-            shell=True,
+            ["powershell", "-NoProfile", "-Command", command],
             cwd=WORKDIR,
             capture_output=True,
             text=True,
@@ -534,7 +561,7 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
 
 
 TOOL_HANDLERS = {
-    "bash": lambda **kw: run_bash(kw["command"]),
+    "powershell": lambda **kw: run_powershell(kw["command"]),
     "read_file": lambda **kw: run_read(kw["path"], kw.get("limit")),
     "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
     "edit_file": lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
@@ -554,8 +581,8 @@ TOOL_HANDLERS = {
 
 TOOLS = [
     {
-        "name": "bash",
-        "description": "Run a shell command in the current workspace (blocking).",
+        "name": "powershell",
+        "description": "Run a PowerShell command in the current workspace (blocking).",
         "input_schema": {
             "type": "object",
             "properties": {"command": {"type": "string"}},
@@ -613,12 +640,12 @@ TOOLS = [
     },
     {
         "name": "task_list",
-        "description": "List all tasks with status, owner, and worktree binding.",
+        "description": "List all tasks with status, owner, and worktree binding. Use this before changing task state when context is unclear.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "task_get",
-        "description": "Get task details by ID.",
+        "description": "Get full task details by ID before binding, updating, or closing a task.",
         "input_schema": {
             "type": "object",
             "properties": {"task_id": {"type": "integer"}},
@@ -627,7 +654,7 @@ TOOLS = [
     },
     {
         "name": "task_update",
-        "description": "Update task status or owner.",
+        "description": "Update task status or owner. Use this to close the loop when work is completed outside worktree_remove.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -643,7 +670,7 @@ TOOLS = [
     },
     {
         "name": "task_bind_worktree",
-        "description": "Bind a task to a worktree name.",
+        "description": "Bind a task to a worktree name so implementation happens in that isolated lane.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -656,7 +683,7 @@ TOOLS = [
     },
     {
         "name": "worktree_create",
-        "description": "Create a git worktree and optionally bind it to a task.",
+        "description": "Create a git worktree and optionally bind it to a task. Use this for parallel or risky task execution.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -669,7 +696,7 @@ TOOLS = [
     },
     {
         "name": "worktree_list",
-        "description": "List worktrees tracked in .worktrees/index.json.",
+        "description": "List worktrees tracked in .worktrees/index.json before creating, reusing, or removing a lane.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -683,7 +710,7 @@ TOOLS = [
     },
     {
         "name": "worktree_run",
-        "description": "Run a shell command in a named worktree directory.",
+        "description": "Run a PowerShell command in a named worktree directory. Prefer this over editing the main workspace for worktree-bound tasks.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -695,7 +722,7 @@ TOOLS = [
     },
     {
         "name": "worktree_remove",
-        "description": "Remove a worktree and optionally mark its bound task completed.",
+        "description": "Remove a worktree and optionally mark its bound task completed. Prefer this for final closeout when the task is done.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -708,7 +735,7 @@ TOOLS = [
     },
     {
         "name": "worktree_keep",
-        "description": "Mark a worktree as kept in lifecycle state without removing it.",
+        "description": "Mark a worktree as kept in lifecycle state without removing it. Use only when follow-up work is intentionally deferred.",
         "input_schema": {
             "type": "object",
             "properties": {"name": {"type": "string"}},
@@ -717,7 +744,7 @@ TOOLS = [
     },
     {
         "name": "worktree_events",
-        "description": "List recent worktree/task lifecycle events from .worktrees/events.jsonl.",
+        "description": "List recent worktree/task lifecycle events from .worktrees/events.jsonl to recover state or audit what happened.",
         "input_schema": {
             "type": "object",
             "properties": {"limit": {"type": "integer"}},
@@ -728,13 +755,23 @@ TOOLS = [
 
 def agent_loop(messages: list):
     while True:
-        response = client.messages.create(
-            model=MODEL,
-            system=SYSTEM,
-            messages=messages,
-            tools=TOOLS,
-            max_tokens=8000,
-        )
+        try:
+            response = client.messages.create(
+                model=MODEL,
+                system=SYSTEM,
+                messages=messages,
+                tools=TOOLS,
+                max_tokens=8000,
+            )
+        except Exception as e:
+            if not is_rate_limit_error(e):
+                print(f"Error: 调用模型失败: {e}")
+                return
+            print("Error: 模型服务返回 429 限流。")
+            print("原因: 当前 API key / 项目已达到组织配额上限，这不是 s12 worktree 逻辑本身的 bug。")
+            print(f"详情: {e}")
+            print("处理建议: 等待限额窗口重置，或切换到有剩余额度的 API key / 项目后再重试。")
+            return
         messages.append({"role": "assistant", "content": response.content})
         if response.stop_reason != "tool_use":
             return
@@ -762,6 +799,8 @@ if __name__ == "__main__":
     print(f"Repo root for s12: {REPO_ROOT}")
     if not WORKTREES.git_available:
         print("Note: Not in a git repo. worktree_* tools will return errors.")
+    else:
+        print("Commands run via PowerShell on Windows.")
 
     history = []
     while True:

@@ -50,20 +50,25 @@ import threading
 import time
 from pathlib import Path
 
-from anthropic import Anthropic
 from dotenv import load_dotenv
 
+from llm_compat import create_client
+
 load_dotenv(override=True)
-if os.getenv("ANTHROPIC_BASE_URL"):
-    os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
 
 WORKDIR = Path.cwd()
-client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
+client = create_client()
 MODEL = os.environ["MODEL_ID"]
 TEAM_DIR = WORKDIR / ".team"
 INBOX_DIR = TEAM_DIR / "inbox"
 
-SYSTEM = f"You are a team lead at {WORKDIR}. Spawn teammates and communicate via inboxes."
+SYSTEM = (
+    f"You are a team lead on Windows at {WORKDIR}. "
+    "Spawn teammates and communicate via inboxes. "
+    "For shell tasks, use PowerShell commands and Windows paths. "
+    "Prefer Get-ChildItem, Get-Content, Copy-Item, Move-Item, Remove-Item, "
+    "Select-String, and Set-Content instead of Unix commands."
+)
 
 VALID_MSG_TYPES = {
     "message",
@@ -165,8 +170,11 @@ class TeammateManager:
 
     def _teammate_loop(self, name: str, role: str, prompt: str):
         sys_prompt = (
-            f"You are '{name}', role: {role}, at {WORKDIR}. "
-            f"Use send_message to communicate. Complete your task."
+            f"You are '{name}', role: {role}, on Windows at {WORKDIR}. "
+            "Use send_message to communicate. Complete your task. "
+            "For shell tasks, use PowerShell commands and Windows paths. "
+            "Prefer Get-ChildItem, Get-Content, Copy-Item, Move-Item, Remove-Item, "
+            "Select-String, and Set-Content instead of Unix commands."
         )
         messages = [{"role": "user", "content": prompt}]
         tools = self._teammate_tools()
@@ -205,8 +213,8 @@ class TeammateManager:
 
     def _exec(self, sender: str, tool_name: str, args: dict) -> str:
         # these base tools are unchanged from s02
-        if tool_name == "bash":
-            return _run_bash(args["command"])
+        if tool_name == "powershell":
+            return _run_powershell(args["command"])
         if tool_name == "read_file":
             return _run_read(args["path"])
         if tool_name == "write_file":
@@ -222,7 +230,7 @@ class TeammateManager:
     def _teammate_tools(self) -> list:
         # these base tools are unchanged from s02
         return [
-            {"name": "bash", "description": "Run a shell command.",
+            {"name": "powershell", "description": "Run a PowerShell command on Windows.",
              "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
             {"name": "read_file", "description": "Read file contents.",
              "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
@@ -259,13 +267,25 @@ def _safe_path(p: str) -> Path:
     return path
 
 
-def _run_bash(command: str) -> str:
-    dangerous = ["rm -rf /", "sudo", "shutdown", "reboot"]
+def _run_powershell(command: str) -> str:
+    dangerous = [
+        "rm -rf /",
+        "sudo",
+        "shutdown",
+        "reboot",
+        "> /dev/",
+        "Remove-Item C:\\",
+        "Remove-Item C:/",
+        "Stop-Computer",
+        "Restart-Computer",
+        "format ",
+    ]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
     try:
         r = subprocess.run(
-            command, shell=True, cwd=WORKDIR,
+            ["powershell", "-NoProfile", "-Command", command],
+            cwd=WORKDIR,
             capture_output=True, text=True, timeout=120,
         )
         out = (r.stdout + r.stderr).strip()
@@ -308,7 +328,7 @@ def _run_edit(path: str, old_text: str, new_text: str) -> str:
 
 # -- Lead tool dispatch (9 tools) --
 TOOL_HANDLERS = {
-    "bash":            lambda **kw: _run_bash(kw["command"]),
+    "powershell":      lambda **kw: _run_powershell(kw["command"]),
     "read_file":       lambda **kw: _run_read(kw["path"], kw.get("limit")),
     "write_file":      lambda **kw: _run_write(kw["path"], kw["content"]),
     "edit_file":       lambda **kw: _run_edit(kw["path"], kw["old_text"], kw["new_text"]),
@@ -321,7 +341,7 @@ TOOL_HANDLERS = {
 
 # these base tools are unchanged from s02
 TOOLS = [
-    {"name": "bash", "description": "Run a shell command.",
+    {"name": "powershell", "description": "Run a PowerShell command on Windows.",
      "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
     {"name": "read_file", "description": "Read file contents.",
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}},

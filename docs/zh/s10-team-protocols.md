@@ -94,8 +94,8 @@ def handle_plan_review(request_id, approve, feedback=""):
 
 ## 试一试
 
-```sh
-cd learn-claude-code
+```powershell
+Set-Location learn-claude-code
 python agents/s10_team_protocols.py
 ```
 

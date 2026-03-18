@@ -107,7 +107,7 @@ The best constraints prevent the model from getting lost, not micromanage its ap
 Never build everything upfront.
 
 ```
-Level 0: Model + one tool (bash)                     -- s01
+Level 0: Model + one tool (powershell)              -- s01
 Level 1: Model + tool dispatch map                    -- s02
 Level 2: Model + planning                             -- s03
 Level 3: Model + subagents + skills                   -- s04, s05

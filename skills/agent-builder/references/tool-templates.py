@@ -16,15 +16,15 @@ WORKDIR = Path.cwd()
 # TOOL DEFINITIONS (for TOOLS list)
 # =============================================================================
 
-BASH_TOOL = {
-    "name": "bash",
-    "description": "Run a shell command. Use for: ls, find, grep, git, npm, python, etc.",
+POWERSHELL_TOOL = {
+    "name": "powershell",
+    "description": "Run a PowerShell command on Windows. Use for: Get-ChildItem, Select-String, git, npm, python, etc.",
     "input_schema": {
         "type": "object",
         "properties": {
             "command": {
                 "type": "string",
-                "description": "The shell command to execute"
+                "description": "The PowerShell command to execute"
             }
         },
         "required": ["command"],
@@ -149,7 +149,7 @@ def safe_path(p: str) -> Path:
     return path
 
 
-def run_bash(command: str) -> str:
+def run_powershell(command: str) -> str:
     """
     Execute shell command with safety checks.
 
@@ -158,14 +158,24 @@ def run_bash(command: str) -> str:
     - 60 second timeout
     - Output truncated to 50KB
     """
-    dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
+    dangerous = [
+        "rm -rf /",
+        "sudo",
+        "shutdown",
+        "reboot",
+        "> /dev/",
+        "Remove-Item C:\\",
+        "Remove-Item C:/",
+        "Stop-Computer",
+        "Restart-Computer",
+        "format ",
+    ]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
 
     try:
         result = subprocess.run(
-            command,
-            shell=True,
+            ["powershell", "-NoProfile", "-Command", command],
             cwd=WORKDIR,
             capture_output=True,
             text=True,
@@ -259,8 +269,8 @@ def execute_tool(name: str, args: dict) -> str:
     2. Add implementation function
     3. Add case to this dispatcher
     """
-    if name == "bash":
-        return run_bash(args["command"])
+    if name == "powershell":
+        return run_powershell(args["command"])
     if name == "read_file":
         return run_read_file(args["path"], args.get("limit"))
     if name == "write_file":

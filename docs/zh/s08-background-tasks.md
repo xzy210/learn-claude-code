@@ -59,8 +59,9 @@ def run(self, command: str) -> str:
 ```python
 def _execute(self, task_id, command):
     try:
-        r = subprocess.run(command, shell=True, cwd=WORKDIR,
-            capture_output=True, text=True, timeout=300)
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", command],
+            cwd=WORKDIR, capture_output=True, text=True, timeout=300)
         output = (r.stdout + r.stderr).strip()[:50000]
     except subprocess.TimeoutExpired:
         output = "Error: Timeout (300s)"
@@ -99,13 +100,13 @@ def agent_loop(messages: list):
 
 ## 试一试
 
-```sh
-cd learn-claude-code
+```powershell
+Set-Location learn-claude-code
 python agents/s08_background_tasks.py
 ```
 
 试试这些 prompt (英文 prompt 对 LLM 效果更好, 也可以用中文):
 
-1. `Run "sleep 5 && echo done" in the background, then create a file while it runs`
-2. `Start 3 background tasks: "sleep 2", "sleep 4", "sleep 6". Check their status.`
+1. `Run "Start-Sleep -Seconds 5; Write-Output done" in the background, then create a file while it runs`
+2. `Start 3 background tasks: "Start-Sleep -Seconds 2", "Start-Sleep -Seconds 4", "Start-Sleep -Seconds 6". Check their status.`
 3. `Run pytest in the background and keep working on other things`

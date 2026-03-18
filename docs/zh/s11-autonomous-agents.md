@@ -10,7 +10,7 @@
 
 s09-s10 中, 队友只在被明确指派时才动。领导得给每个队友写 prompt, 任务看板上 10 个未认领的任务得手动分配。这扩展不了。
 
-真正的自治: 队友自己扫描任务看板, 认领没人做的任务, 做完再找下一个。
+真正的自治: 队友自己扫描任务看板, 认领没人做的任务, 做完后标记完成, 或在无法继续时释放任务再找下一个。
 
 一个细节: 上下文压缩 (s06) 后智能体可能忘了自己是谁。身份重注入解决这个问题。
 
@@ -39,6 +39,14 @@ Teammate lifecycle with idle cycle:
     +---> scan .tasks/ --> unclaimed? -------> claim -> WORK
     |
     +---> 60s timeout ----------------------> SHUTDOWN
+
+Lead background inbox watcher:
+  auto-approve teammate plan requests
+  queue other inbox messages for the lead
+
+Task board lifecycle:
+  pending -> in_progress -> completed
+           \-> release -> pending
 
 Identity re-injection after compression:
   if len(messages) <= 3:
@@ -106,7 +114,38 @@ def scan_unclaimed_tasks() -> list:
     return unclaimed
 ```
 
-4. 身份重注入: 上下文过短 (说明发生了压缩) 时, 在开头插入身份块。
+4. lead 端后台轮询收件箱。队友发来的 `plan_approval` 请求会被自动批准, 不再因为主线程停在 `input()` 而卡住。
+
+```python
+def _lead_inbox_loop():
+    while True:
+        inbox = BUS.read_inbox("lead")
+        if inbox:
+            _handle_lead_inbox_messages(inbox)
+        time.sleep(LEAD_POLL_INTERVAL)
+
+def _handle_lead_inbox_messages(messages):
+    for msg in messages:
+        if msg.get("type") == "plan_approval_response":
+            handle_plan_review(msg["request_id"], True,
+                "Auto-approved by lead while running autonomous mode.")
+        else:
+            _queue_lead_event(msg)
+```
+
+5. 任务板现在支持完整闭环: 认领、完成、释放。
+
+```python
+def complete_task(task_id, actor, summary=""):
+    task["status"] = "completed"
+    task["completedBy"] = actor
+
+def release_task(task_id, actor, reason=""):
+    task["owner"] = ""
+    task["status"] = "pending"
+```
+
+6. 身份重注入: 上下文过短 (说明发生了压缩) 时, 在开头插入身份块。
 
 ```python
 if len(messages) <= 3:
@@ -121,24 +160,27 @@ if len(messages) <= 3:
 
 | 组件           | 之前 (s10)       | 之后 (s11)                       |
 |----------------|------------------|----------------------------------|
-| Tools          | 12               | 14 (+idle, +claim_task)          |
+| Tools          | 12               | 18 (+idle, +claim_task, +task_complete, +task_release) |
 | 自治性         | 领导指派         | 自组织                           |
 | 空闲阶段       | 无               | 轮询收件箱 + 任务看板            |
 | 任务认领       | 仅手动           | 自动认领未分配任务               |
+| 任务闭环       | 认领后易悬挂     | 可完成 / 可释放                  |
+| 审批处理       | 主线程驱动       | lead 后台自动审批计划请求        |
 | 身份           | 系统提示         | + 压缩后重注入                   |
 | 超时           | 无               | 60 秒空闲 -> 自动关机            |
 
 ## 试一试
 
-```sh
-cd learn-claude-code
+```powershell
+Set-Location learn-claude-code
 python agents/s11_autonomous_agents.py
 ```
 
 试试这些 prompt (英文 prompt 对 LLM 效果更好, 也可以用中文):
 
-1. `Create 3 tasks on the board, then spawn alice and bob. Watch them auto-claim.`
+1. `Create 3 tasks on the board, then spawn alice and bob. Watch them auto-claim and complete tasks.`
 2. `Spawn a coder teammate and let it find work from the task board itself`
 3. `Create tasks with dependencies. Watch teammates respect the blocked order.`
 4. 输入 `/tasks` 查看带 owner 的任务看板
 5. 输入 `/team` 监控谁在工作、谁在空闲
+6. 输入 `/inbox` 查看 lead 收到的后台事件和自动审批结果

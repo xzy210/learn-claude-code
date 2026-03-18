@@ -2,7 +2,7 @@
 
 `[ s01 ] s02 > s03 > s04 > s05 > s06 | s07 > s08 > s09 > s10 > s11 > s12`
 
-> *"One loop & Bash is all you need"* -- one tool + one loop = an agent.
+> *"One loop & PowerShell is all you need"* -- one tool + one loop = an agent.
 >
 > **Harness layer**: The loop -- the model's first connection to the real world.
 
@@ -56,7 +56,7 @@ if response.stop_reason != "tool_use":
 results = []
 for block in response.content:
     if block.type == "tool_use":
-        output = run_bash(block.input["command"])
+        output = run_powershell(block.input["command"])
         results.append({
             "type": "tool_result",
             "tool_use_id": block.id,
@@ -83,7 +83,7 @@ def agent_loop(query):
         results = []
         for block in response.content:
             if block.type == "tool_use":
-                output = run_bash(block.input["command"])
+                output = run_powershell(block.input["command"])
                 results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
@@ -99,18 +99,18 @@ That's the entire agent in under 30 lines. Everything else in this course layers
 | Component     | Before     | After                          |
 |---------------|------------|--------------------------------|
 | Agent loop    | (none)     | `while True` + stop_reason     |
-| Tools         | (none)     | `bash` (one tool)              |
+| Tools         | (none)     | `powershell` (one tool)        |
 | Messages      | (none)     | Accumulating list              |
 | Control flow  | (none)     | `stop_reason != "tool_use"`    |
 
 ## Try It
 
-```sh
-cd learn-claude-code
+```powershell
+Set-Location learn-claude-code
 python agents/s01_agent_loop.py
 ```
 
 1. `Create a file called hello.py that prints "Hello, World!"`
-2. `List all Python files in this directory`
+2. `List all Python files in this directory using PowerShell`
 3. `What is the current git branch?`
-4. `Create a directory called test_output and write 3 files in it`
+4. `Create a directory called test_output and write 3 files in it using PowerShell`
